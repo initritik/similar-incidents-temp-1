@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { ChatContainer } from "@/components/chat/ChatContainer";
 import { ChatInput } from "@/components/chat/ChatInput";
+import type { SendPayload } from "@/components/chat/ChatInput";
 import { AgentLog } from "@/components/chat/AgentLog";
 import type { ChatMessageProps } from "@/components/chat/ChatMessage";
 import { IncidentsPanel } from "@/components/incidents/IncidentsPanel";
@@ -77,6 +78,20 @@ function AssistantContent({
   );
 }
 
+// ── Build ChatRequest from user input ────────────────────────────────────────
+
+function buildChatRequest(payload: SendPayload, topK = 5): ChatRequest {
+  switch (payload.searchType) {
+    case "incident_number":
+      return { incident_number: payload.text, top_k: topK };
+    case "incident_link":
+      return { incident_link: payload.text, top_k: topK };
+    case "description":
+    default:
+      return { user_query: payload.text, top_k: topK };
+  }
+}
+
 // ── ChatPage ─────────────────────────────────────────────────────────────────
 
 export function ChatPage({ sessionId, onSessionUpdated }: ChatPageProps) {
@@ -139,8 +154,9 @@ export function ChatPage({ sessionId, onSessionUpdated }: ChatPageProps) {
   // ── Send message with SSE streaming ────────────────────────────────────
 
   const handleSendMessage = useCallback(
-    async (userMessage: string) => {
-      const userMsg: ChatMessageProps = { role: "user", content: userMessage };
+    async (payload: SendPayload) => {
+      // Display the raw user text in the chat bubble
+      const userMsg: ChatMessageProps = { role: "user", content: payload.text };
       const newMessages = [...messages, userMsg];
 
       // Reset streaming log
@@ -161,7 +177,8 @@ export function ChatPage({ sessionId, onSessionUpdated }: ChatPageProps) {
       );
       setMessages([...newMessages, { role: "assistant", content: placeholderContent }]);
 
-      const request: ChatRequest = { user_query: userMessage, top_k: 5 };
+      // Build the correct request shape based on the search type
+      const request: ChatRequest = buildChatRequest(payload);
 
       // ── Progress callback — called for each SSE progress event ──────────
       const onProgress = (event: AgentProgressEvent) => {
@@ -262,7 +279,7 @@ export function ChatPage({ sessionId, onSessionUpdated }: ChatPageProps) {
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
       {/* Toolbar */}
-      <div
+      {/* <div
         className="flex items-center h-16 justify-between pl-12 pr-4 sm:pl-14 sm:pr-6 lg:px-12 py-3.5"
         style={{
           borderBottom:   "1px solid hsl(var(--rl-ink-800))",
@@ -290,13 +307,15 @@ export function ChatPage({ sessionId, onSessionUpdated }: ChatPageProps) {
           <Trash2 size={12} strokeWidth={2} />
           Clear
         </button>
-      </div>
+      </div> */}
 
       {/* Messages */}
       <ChatContainer
         messages={messages}
         isLoading={false}
-        onSuggestionClick={handleSendMessage}
+        onSuggestionClick={(label) =>
+          handleSendMessage({ text: label, searchType: "description" })
+        }
       />
 
       {/* Input */}

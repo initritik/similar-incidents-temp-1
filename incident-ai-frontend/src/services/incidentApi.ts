@@ -7,7 +7,12 @@ import type {
 } from "@/types/incident";
 
 const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL ?? "https://incident-ai-backend-4o8d.onrender.com";
+  // import.meta.env.VITE_API_BASE_URL ?? "https://incident-ai-backend-4o8d.onrender.com";
+  "http://localhost:8000"; // for local development
+
+// How long to wait for the full SSE stream to complete.
+// Render free-tier backends cold-start in up to 60 s, so 120 s is safe.
+const SSE_TIMEOUT_MS = 120_000;
 
 type ApiErrorPayload = { detail?: string; message?: string };
 
@@ -62,13 +67,41 @@ export async function searchIncidents(
  *
  * Calls onProgress for each agent step event.
  * Resolves with the final ChatResponse when the 'result' event arrives.
- * Rejects on 'error' events or network failure.
+ * Rejects on 'error' events, network failure, stream ending without a result,
+ * or after SSE_TIMEOUT_MS.
  */
 export function chatWithIncidentsStream(
   request: ChatRequest,
   onProgress: (event: AgentProgressEvent) => void
 ): Promise<ChatResponse> {
   return new Promise((resolve, reject) => {
+    // ── Overall timeout guard ───────────────────────────────────────────────
+    // Prevents the Promise hanging forever if the backend dies silently or
+    // the Render free-tier cold start exceeds our patience.
+    const timeoutId = setTimeout(() => {
+      reject(
+        new Error(
+          "Request timed out. The backend may be starting up — please try again in a moment."
+        )
+      );
+    }, SSE_TIMEOUT_MS);
+
+    let settled = false;
+
+    function safeResolve(value: ChatResponse) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutId);
+      resolve(value);
+    }
+
+    function safeReject(err: Error) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutId);
+      reject(err);
+    }
+
     fetch(`${API_BASE_URL}/chat/incidents`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -76,9 +109,16 @@ export function chatWithIncidentsStream(
     })
       .then((response) => {
         if (!response.ok || !response.body) {
-          return response.json().then((err: ApiErrorPayload) => {
-            reject(new Error(err.detail ?? err.message ?? `HTTP ${response.status}`));
-          });
+          return response
+            .json()
+            .then((err: ApiErrorPayload) => {
+              safeReject(
+                new Error(err.detail ?? err.message ?? `HTTP ${response.status}`)
+              );
+            })
+            .catch(() => {
+              safeReject(new Error(`HTTP ${response.status} — backend returned no body.`));
+            });
         }
 
         const reader = response.body.getReader();
@@ -86,7 +126,6 @@ export function chatWithIncidentsStream(
         let buffer = "";
 
         function parseSseChunk(chunk: string) {
-          // SSE messages end with \n\n; each line is "field: value"
           const messages = (buffer + chunk).split("\n\n");
           buffer = messages.pop() ?? "";
 
@@ -106,9 +145,11 @@ export function chatWithIncidentsStream(
               if (eventType === "progress") {
                 onProgress(parsed as AgentProgressEvent);
               } else if (eventType === "result") {
-                resolve(parsed as ChatResponse);
+                safeResolve(parsed as ChatResponse);
               } else if (eventType === "error") {
-                reject(new Error((parsed as { message: string }).message));
+                safeReject(
+                  new Error((parsed as { message: string }).message ?? "Agent error")
+                );
               }
             } catch {
               // Malformed SSE data — ignore
@@ -118,21 +159,33 @@ export function chatWithIncidentsStream(
 
         function pump(): Promise<void> {
           return reader.read().then(({ done, value }) => {
-            if (done) return;
+            if (done) {
+              // Stream ended — if we never got a 'result' event, the Promise
+              // would hang forever. Reject with a clear message instead.
+              safeReject(
+                new Error(
+                  "The response stream ended unexpectedly. " +
+                    "The backend may have crashed or timed out."
+                )
+              );
+              return;
+            }
             parseSseChunk(decoder.decode(value, { stream: true }));
             return pump();
           });
         }
 
-        pump().catch(reject);
+        pump().catch((err: unknown) =>
+          safeReject(err instanceof Error ? err : new Error("Stream read error"))
+        );
       })
-      .catch(reject);
+      .catch((err: unknown) =>
+        safeReject(err instanceof Error ? err : new Error("Network request failed."))
+      );
   });
 }
 
 /** Legacy non-streaming chat — kept for backwards compat with search page. */
 export async function chatWithIncidents(request: ChatRequest): Promise<ChatResponse> {
-  return new Promise((resolve, reject) => {
-    chatWithIncidentsStream(request, () => {}).then(resolve).catch(reject);
-  });
+  return chatWithIncidentsStream(request, () => {});
 }
