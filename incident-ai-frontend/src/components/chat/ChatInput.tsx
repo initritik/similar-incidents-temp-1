@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ArrowUp, Loader2, Plus, X } from "lucide-react";
+import { ArrowUp, Loader2, Plus, PlusIcon, X } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -17,19 +17,22 @@ export interface ChatInputProps {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const SEARCH_OPTIONS: { key: SearchType; title: string; example: string }[] = [
+const SEARCH_OPTIONS: { key: SearchType; title: string; example: string, label: string }[] = [
   {
     key: "description",
+    label: "Description",
     title: "Search by Description",
     example: "Payroll application returns 500 error on login",
   },
   {
     key: "incident_number",
+    label: "Incident Number",
     title: "Search by Incident Number",
     example: "INC0000018",
   },
   {
     key: "incident_link",
+    label: "Incident Link",
     title: "Search by Incident Link",
     example:
       "https://example.service-now.com/nav_to.do?uri=incident.do%3Fsys_id%3D82cd5d235ada5ac7a4e21ff381d392f1",
@@ -71,13 +74,13 @@ export function ChatInput({ onSendMessage, isLoading = false }: ChatInputProps) 
     }
   };
 
-  const getSearchTypeLabel = () => {
-    switch (searchType) {
-      case "description": return "Description";
-      case "incident_number": return "Incident Number";
-      case "incident_link": return "Incident Link";
-    }
-  };
+  // const getSearchTypeLabel = () => {
+  //   switch (searchType) {
+  //     case "description": return "Description";
+  //     case "incident_number": return "Incident Number";
+  //     case "incident_link": return "Incident Link";
+  //   }
+  // };
 
   return (
     <div
@@ -93,7 +96,7 @@ export function ChatInput({ onSendMessage, isLoading = false }: ChatInputProps) 
 
         {/* Input container */}
         <div
-          className="relative rounded-2xl h-40 transition-all duration-200"
+          className="relative rounded-2xl transition-all duration-200"
           style={{
             background: "hsl(var(--rl-ink-900))",
             border: isFocused
@@ -107,7 +110,7 @@ export function ChatInput({ onSendMessage, isLoading = false }: ChatInputProps) 
 
           <div className="flex gap-2 m-2">
 
-            <div>
+            {/* <div>
               <button
                 type="button"
                 onClick={() => setShowSearchOptions((prev) => !prev)}
@@ -119,12 +122,12 @@ export function ChatInput({ onSendMessage, isLoading = false }: ChatInputProps) 
                 }}
               >
                 {showSearchOptions ? <X size={14} /> : <Plus size={14} />}
-                {getSearchTypeLabel() ?<>  Searching by: <span className="border rounded-lg py-1 px-2 border-purple-800 text-amber-500">{getSearchTypeLabel()}</span></> : "Search Options"}
+                {getSearchTypeLabel() ? <>  Searching by: <span className="border rounded-lg py-1 px-2 border-purple-800 text-amber-500">{getSearchTypeLabel()}</span></> : "Search Options"}
               </button>
 
               {showSearchOptions && (
                 <div
-                  className="mt-3 rounded-2xl p-4 space-y-3"
+                  className="absolute -top-[200px] left-2 right-2 rounded-2xl p-4 space-y-3"
                   style={{
                     background: "hsl(var(--rl-ink-900))",
                     border: "1px solid hsl(var(--rl-ink-700))",
@@ -171,7 +174,7 @@ export function ChatInput({ onSendMessage, isLoading = false }: ChatInputProps) 
                   })}
                 </div>
               )}
-            </div>
+            </div> */}
             {/* Active search type badge */}
             {/* <div className="px-4 pt-2">
               <div
@@ -200,12 +203,12 @@ export function ChatInput({ onSendMessage, isLoading = false }: ChatInputProps) 
               fontFamily: "'DM Sans', sans-serif",
               color: "hsl(var(--rl-ink-100))",
             }}
-            rows={3}
+            rows={2}
           />
 
           {/* Bottom row */}
           <div className="absolute bottom-3 left-4 right-3 flex items-center justify-between">
-            <p
+            {/* <p
               className="text-[10px] hidden sm:block"
               style={{ color: "hsl(var(--rl-ink-600))" }}
             >
@@ -216,8 +219,33 @@ export function ChatInput({ onSendMessage, isLoading = false }: ChatInputProps) 
               style={{ color: "hsl(var(--rl-ink-600))" }}
             >
               Tap ↑ to send
-            </p>
+            </p> */}
+            <div className="flex items-center gap-2">
+              <button className="transition p-2 rounded-full border" onClick={() => setShowSearchOptions(prev => !prev)}> {showSearchOptions ? <X className="size-4" /> : <PlusIcon className="size-4" />} </button>
+              <div className="flex flex-row gap-2">
+                {
+                  showSearchOptions && SEARCH_OPTIONS.map((option) => {
+                    const isActive = searchType === option.key;
+                    return (
+                      <button
+                        type="button"
+                        key={option.key}
+                        onClick={() => {
+                          setSearchType(option.key);
+                          // setShowSearchOptions(false);
+                        }}
+                        className={`rounded-lg text-center px-2 py-1 text-xs transition-all duration-200 ${isActive ? 'bg-purple-950/35 border border-gold-400/40' : 'bg-ink-950 border border-ink-800'}`}
+                      >
 
+                        {option.label}
+                      </button>
+                    );
+                  })}
+              </div>
+
+            </div>
+
+            
             <button
               type="submit"
               disabled={!canSend}
