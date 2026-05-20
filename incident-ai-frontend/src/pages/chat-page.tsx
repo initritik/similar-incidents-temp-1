@@ -1,10 +1,16 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { ChatContainer } from "@/components/chat/ChatContainer";
 import { ChatInput } from "@/components/chat/ChatInput";
+import { AgentLog } from "@/components/chat/AgentLog";
 import type { ChatMessageProps } from "@/components/chat/ChatMessage";
 import { IncidentsPanel } from "@/components/incidents/IncidentsPanel";
-import { chatWithIncidents } from "@/services/incidentApi";
-import type { ChatRequest, SimilarIncident } from "@/types/incident";
+import { chatWithIncidentsStream } from "@/services/incidentApi";
+import type {
+  AgentProgressEvent,
+  ChatRequest,
+  ChatResponse,
+  SimilarIncident,
+} from "@/types/incident";
 import {
   loadMessagesFromSession,
   saveMessagesToSession,
@@ -12,37 +18,77 @@ import {
 } from "@/lib/chatStorage";
 import { Trash2 } from "lucide-react";
 
+// ── Stored assistant response shape ─────────────────────────────────────────
+
 interface AssistantResponse {
   answerText: string;
-  incidents:  SimilarIncident[];
+  incidents: SimilarIncident[];
+  recommendedResolution: string;
+  recommendedDatafix: string | null;
 }
 
+// ── Chat page props ──────────────────────────────────────────────────────────
+
 interface ChatPageProps {
-  sessionId:         string;
+  sessionId: string;
   onSessionUpdated?: () => void;
 }
+
+// ── AssistantContent: renders answer + agent log + incidents panel ────────────
 
 function AssistantContent({
   answerText,
   incidents,
+  recommendedResolution,
+  recommendedDatafix,
+  agentEvents,
+  isStreaming,
 }: {
   answerText: string;
-  incidents:  SimilarIncident[];
+  incidents: SimilarIncident[];
+  recommendedResolution: string;
+  recommendedDatafix: string | null;
+  agentEvents?: AgentProgressEvent[];
+  isStreaming?: boolean;
 }) {
   return (
     <div>
-      <p className="text-sm leading-relaxed" style={{ color: "hsl(var(--rl-ink-200))" }}>
-        {answerText}
-      </p>
-      {incidents && incidents.length > 0 && <IncidentsPanel incidents={incidents} />}
+      {/* Answer text */}
+      {answerText && (
+        <p className="text-sm leading-relaxed" style={{ color: "hsl(var(--rl-ink-200))" }}>
+          {answerText}
+        </p>
+      )}
+
+      {/* Live agent operation log */}
+      {agentEvents && agentEvents.length > 0 && (
+        <AgentLog events={agentEvents} isStreaming={isStreaming ?? false} />
+      )}
+
+      {/* Incidents + resolution + datafix panel */}
+      {incidents && incidents.length > 0 && (
+        <IncidentsPanel
+          incidents={incidents}
+          recommendedResolution={recommendedResolution}
+          recommendedDatafix={recommendedDatafix}
+        />
+      )}
     </div>
   );
 }
+
+// ── ChatPage ─────────────────────────────────────────────────────────────────
 
 export function ChatPage({ sessionId, onSessionUpdated }: ChatPageProps) {
   const [messages,           setMessages]           = useState<ChatMessageProps[]>([]);
   const [assistantResponses, setAssistantResponses] = useState<AssistantResponse[]>([]);
   const [isLoading,          setIsLoading]          = useState(false);
+
+  // Live streaming state — only relevant for the in-progress message
+  const [streamingEvents, setStreamingEvents] = useState<AgentProgressEvent[]>([]);
+  const streamingEventsRef = useRef<AgentProgressEvent[]>([]);
+
+  // ── Restore session ─────────────────────────────────────────────────────
 
   useEffect(() => {
     const stored = loadMessagesFromSession(sessionId);
@@ -59,14 +105,16 @@ export function ChatPage({ sessionId, onSessionUpdated }: ChatPageProps) {
       if (msg.role === "user") {
         reconstructed.push({ role: "user", content: msg.content as string });
       } else {
-        const data = msg.content as { answerText: string; incidents: SimilarIncident[] };
-        responses.push({ answerText: data.answerText, incidents: data.incidents });
+        const data = msg.content as AssistantResponse;
+        responses.push(data);
         reconstructed.push({
-          role:    "assistant",
+          role: "assistant",
           content: (
             <AssistantContent
               answerText={data.answerText}
               incidents={data.incidents}
+              recommendedResolution={data.recommendedResolution}
+              recommendedDatafix={data.recommendedDatafix}
             />
           ),
         });
@@ -77,77 +125,143 @@ export function ChatPage({ sessionId, onSessionUpdated }: ChatPageProps) {
     setAssistantResponses(responses);
   }, [sessionId]);
 
+  // ── Clear chat ──────────────────────────────────────────────────────────
+
   const handleClearChat = () => {
     setMessages([]);
     setAssistantResponses([]);
+    setStreamingEvents([]);
+    streamingEventsRef.current = [];
     clearChatStorage();
     onSessionUpdated?.();
   };
 
-  const handleSendMessage = useCallback(async (userMessage: string) => {
-    const userMsg: ChatMessageProps = { role: "user", content: userMessage };
-    const newMessages = [...messages, userMsg];
-    setMessages(newMessages);
-    setIsLoading(true);
+  // ── Send message with SSE streaming ────────────────────────────────────
 
-    try {
+  const handleSendMessage = useCallback(
+    async (userMessage: string) => {
+      const userMsg: ChatMessageProps = { role: "user", content: userMessage };
+      const newMessages = [...messages, userMsg];
+
+      // Reset streaming log
+      streamingEventsRef.current = [];
+      setStreamingEvents([]);
+      setIsLoading(true);
+
+      // Add a placeholder assistant message that shows only the live agent log
+      const placeholderContent = (
+        <AssistantContent
+          answerText=""
+          incidents={[]}
+          recommendedResolution=""
+          recommendedDatafix={null}
+          agentEvents={[]}
+          isStreaming={true}
+        />
+      );
+      setMessages([...newMessages, { role: "assistant", content: placeholderContent }]);
+
       const request: ChatRequest = { user_query: userMessage, top_k: 5 };
-      const response = await chatWithIncidents(request);
 
-      const responseData: AssistantResponse = {
-        answerText: response.answer,
-        incidents:  response.results || [],
+      // ── Progress callback — called for each SSE progress event ──────────
+      const onProgress = (event: AgentProgressEvent) => {
+        streamingEventsRef.current = [...streamingEventsRef.current, event];
+        const snapshot = [...streamingEventsRef.current];
+
+        // Update the placeholder assistant message with the latest events
+        setMessages((prev) => {
+          const updated = [...prev];
+          updated[updated.length - 1] = {
+            role: "assistant",
+            content: (
+              <AssistantContent
+                answerText=""
+                incidents={[]}
+                recommendedResolution=""
+                recommendedDatafix={null}
+                agentEvents={snapshot}
+                isStreaming={true}
+              />
+            ),
+          };
+          return updated;
+        });
+
+        setStreamingEvents(snapshot);
       };
 
-      const assistantMessage: ChatMessageProps = {
-        role:    "assistant",
-        content: (
-          <AssistantContent
-            answerText={response.answer}
-            incidents={response.results || []}
-          />
-        ),
-      };
+      try {
+        const response: ChatResponse = await chatWithIncidentsStream(request, onProgress);
+        const finalEvents = [...streamingEventsRef.current];
 
-      const updatedMessages  = [...newMessages, assistantMessage];
-      const updatedResponses = [...assistantResponses, responseData];
+        const responseData: AssistantResponse = {
+          answerText:            response.answer,
+          incidents:             response.results || [],
+          recommendedResolution: response.recommended_resolution || "",
+          recommendedDatafix:    response.recommended_datafix ?? null,
+        };
 
-      setMessages(updatedMessages);
-      setAssistantResponses(updatedResponses);
-
-      saveMessagesToSession(sessionId, updatedMessages, updatedResponses);
-      onSessionUpdated?.();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "An error occurred";
-      console.error("Chat API error:", msg);
-
-      setMessages((prev) => [
-        ...prev,
-        {
-          role:    "assistant",
+        // Replace placeholder with the full response (events still shown)
+        const assistantMessage: ChatMessageProps = {
+          role: "assistant",
           content: (
-            <div
-              className="rounded-xl border px-4 py-3 text-sm"
-              style={{
-                background:  "hsl(350 70% 55% / 0.08)",
-                borderColor: "hsl(350 70% 55% / 0.2)",
-                color:       "hsl(350 70% 72%)",
-              }}
-            >
-              <p className="font-semibold">Something went wrong</p>
-              <p className="mt-1 text-xs opacity-80">{msg}</p>
-            </div>
+            <AssistantContent
+              answerText={response.answer}
+              incidents={response.results || []}
+              recommendedResolution={response.recommended_resolution || ""}
+              recommendedDatafix={response.recommended_datafix ?? null}
+              agentEvents={finalEvents}
+              isStreaming={false}
+            />
           ),
-        },
-      ]);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [messages, assistantResponses, sessionId, onSessionUpdated]);
+        };
+
+        const updatedMessages  = [...newMessages, assistantMessage];
+        const updatedResponses = [...assistantResponses, responseData];
+
+        setMessages(updatedMessages);
+        setAssistantResponses(updatedResponses);
+        setStreamingEvents([]);
+
+        saveMessagesToSession(sessionId, updatedMessages, updatedResponses);
+        onSessionUpdated?.();
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "An error occurred";
+        console.error("Chat SSE error:", msg);
+
+        setMessages((prev) => {
+          const updated = [...prev];
+          updated[updated.length - 1] = {
+            role: "assistant",
+            content: (
+              <div
+                className="rounded-xl border px-4 py-3 text-sm"
+                style={{
+                  background:  "hsl(350 70% 55% / 0.08)",
+                  borderColor: "hsl(350 70% 55% / 0.2)",
+                  color:       "hsl(350 70% 72%)",
+                }}
+              >
+                <p className="font-semibold">Something went wrong</p>
+                <p className="mt-1 text-xs opacity-80">{msg}</p>
+              </div>
+            ),
+          };
+          return updated;
+        });
+      } finally {
+        setIsLoading(false);
+        streamingEventsRef.current = [];
+      }
+    },
+    [messages, assistantResponses, sessionId, onSessionUpdated]
+  );
+
+  // ── Render ──────────────────────────────────────────────────────────────
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
-      {/* ── Toolbar ── */}
+      {/* Toolbar */}
       <div
         className="flex items-center h-16 justify-between pl-12 pr-4 sm:pl-14 sm:pr-6 lg:px-12 py-3.5"
         style={{
@@ -156,39 +270,21 @@ export function ChatPage({ sessionId, onSessionUpdated }: ChatPageProps) {
           backdropFilter: "blur(8px)",
         }}
       >
-        <div className="flex items-center gap-2.5">
-          {/* <div
-            className="h-1.5 w-1.5 rounded-full"
-            style={{
-              background: "hsl(var(--rl-gold-400))",
-              boxShadow:  "0 0 6px hsl(var(--rl-gold-400) / 0.55)",
-            }}
-          />
-          <p
-            className="text-[10px] font-semibold uppercase tracking-[0.14em]"
-            style={{ color: "hsl(var(--rl-ink-400))" }}
-          >
-            Conversation
-          </p> */}
-        </div>
-
+        <div />
         <button
           onClick={handleClearChat}
           disabled={messages.length === 0}
           className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-30"
           style={{ color: "hsl(var(--rl-ink-500))" }}
           onMouseEnter={(e) => {
-            if (!((e.currentTarget as HTMLButtonElement).disabled)) {
-              (e.currentTarget as HTMLButtonElement).style.background =
-                "hsl(var(--rl-ink-800))";
-              (e.currentTarget as HTMLButtonElement).style.color =
-                "hsl(var(--rl-ink-200))";
+            if (!(e.currentTarget as HTMLButtonElement).disabled) {
+              (e.currentTarget as HTMLButtonElement).style.background = "hsl(var(--rl-ink-800))";
+              (e.currentTarget as HTMLButtonElement).style.color = "hsl(var(--rl-ink-200))";
             }
           }}
           onMouseLeave={(e) => {
             (e.currentTarget as HTMLButtonElement).style.background = "transparent";
-            (e.currentTarget as HTMLButtonElement).style.color =
-              "hsl(var(--rl-ink-500))";
+            (e.currentTarget as HTMLButtonElement).style.color = "hsl(var(--rl-ink-500))";
           }}
         >
           <Trash2 size={12} strokeWidth={2} />
@@ -196,14 +292,14 @@ export function ChatPage({ sessionId, onSessionUpdated }: ChatPageProps) {
         </button>
       </div>
 
-      {/* ── Messages ── */}
+      {/* Messages */}
       <ChatContainer
         messages={messages}
-        isLoading={isLoading}
+        isLoading={false}
         onSuggestionClick={handleSendMessage}
       />
 
-      {/* ── Input ── */}
+      {/* Input */}
       <ChatInput onSendMessage={handleSendMessage} isLoading={isLoading} />
     </div>
   );

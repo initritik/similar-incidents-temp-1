@@ -11,6 +11,8 @@ export interface StoredMessage {
   role: "user" | "assistant";
   userText?:   string;
   answerText?: string;
+  recommendedResolution?: string;
+  recommendedDatafix?: string | null;
   incidents?:  SimilarIncident[];
   timestamp:   number;
 }
@@ -27,7 +29,7 @@ export interface ChatSession {
 
 export interface ReconstructedMessage {
   role: "user" | "assistant";
-  content: string | { answerText: string; incidents: SimilarIncident[] };
+  content: string | { answerText: string; incidents: SimilarIncident[]; recommendedResolution: string; recommendedDatafix: string | null };
   timestamp: number;
 }
 
@@ -138,7 +140,7 @@ export function createNewSession(): string {
 export function saveMessagesToSession(
   sessionId: string,
   messages: Array<{ role: "user" | "assistant"; content: string | any }>,
-  assistantData?: Array<{ answerText: string; incidents: SimilarIncident[] }>,
+  assistantData?: Array<{ answerText: string; incidents: SimilarIncident[]; recommendedResolution?: string; recommendedDatafix?: string | null }>,
 ): void {
   try {
     const existing = getSession(sessionId);
@@ -159,6 +161,8 @@ export function saveMessagesToSession(
         stored.push({
           role:       "assistant",
           answerText: data?.answerText ?? "",
+          recommendedResolution: data?.recommendedResolution ?? "",
+          recommendedDatafix: data?.recommendedDatafix ?? null,
           incidents:  data?.incidents ?? [],
           timestamp:  Date.now(),
         });
@@ -203,7 +207,7 @@ export function loadMessagesFromSession(sessionId: string): ReconstructedMessage
       content:
         msg.role === "user"
           ? (msg.userText ?? "")
-          : { answerText: msg.answerText ?? "", incidents: msg.incidents ?? [] },
+          : { answerText: msg.answerText ?? "", incidents: msg.incidents ?? [], recommendedResolution: msg.recommendedResolution ?? "", recommendedDatafix: msg.recommendedDatafix ?? null },
       timestamp: msg.timestamp,
     }));
   } catch {
@@ -246,7 +250,7 @@ export function deleteSession(sessionId: string): void {
 /** @deprecated Use saveMessagesToSession with an explicit session ID instead. */
 export function saveChatToStorage(
   messages: Array<{ role: "user" | "assistant"; content: string | any }>,
-  assistantData?: Array<{ answerText: string; incidents: SimilarIncident[] }>,
+  assistantData?: Array<{ answerText: string; incidents: SimilarIncident[]; recommendedResolution?: string; recommendedDatafix?: string | null }>,
 ): void {
   const id = getActiveSessionId();
   if (id) saveMessagesToSession(id, messages, assistantData);
