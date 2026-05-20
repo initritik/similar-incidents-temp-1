@@ -44,7 +44,8 @@ app.add_middleware(
         "http://localhost:5173",
         "http://localhost:5174",
         "http://localhost:3000",
-        "http://localhost:8000",
+        "http://localhost:8000"
+        "https://similar-incidents-temp-1.vercel.app",
     ],  # don't add / at the end of the url
     # HTTP methods that are allowed for cross-origin requests.
     # OPTIONS is required for preflight requests; GET/POST/etc. are for actual requests.
