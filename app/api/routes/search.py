@@ -26,6 +26,8 @@ class SimilarIncidentResult(BaseModel):
     category: str = ""
     resolution_notes: str = ""
     servicenow_link: str = ""
+    azure_devops_link: str = ""
+    datafix_code: str = ""
     similarity_score: float = 0.0
 
 
@@ -45,6 +47,8 @@ def _map_result(raw: Dict[str, Any]) -> SimilarIncidentResult:
         category=raw.get("category", ""),
         resolution_notes=raw.get("resolution_notes", ""),
         servicenow_link=raw.get("servicenow_link", ""),
+        azure_devops_link=raw.get("azure_devops_link", ""),
+        datafix_code=raw.get("datafix_code", ""),
         similarity_score=raw.get("similarity_score", 0.0),
     )
 
